@@ -3,8 +3,7 @@ import numpy as np
 import cv2
 from torch.utils.data import Dataset
 import prepare_data
-from albumentations.torch.functional import img_to_tensor
-
+from torchvision.transforms import ToTensor
 
 class RoboticsDataset(Dataset):
     def __init__(self, file_names, to_augment=False, transform=None, mode='train', problem_type=None):
@@ -28,11 +27,11 @@ class RoboticsDataset(Dataset):
 
         if self.mode == 'train':
             if self.problem_type == 'binary':
-                return img_to_tensor(image), torch.from_numpy(np.expand_dims(mask, 0)).float()
+                return ToTensor(image), torch.from_numpy(np.expand_dims(mask, 0)).float()
             else:
-                return img_to_tensor(image), torch.from_numpy(mask).long()
+                return ToTensor(image), torch.from_numpy(mask).long()
         else:
-            return img_to_tensor(image), str(img_file_name)
+            return ToTensor(image), str(img_file_name)
 
 
 def load_image(path):
