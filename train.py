@@ -42,7 +42,7 @@ def main():
     arg('--fold', type=int, help='fold', default=0)
     arg('--root', default='runs/debug', help='checkpoint root')
     arg('--batch-size', type=int, default=1)
-    arg('--n-epochs', type=int, default=100)
+    arg('--n-epochs', type=int, default=1)
     arg('--lr', type=float, default=0.0001)
     arg('--workers', type=int, default=12)
     arg('--train_crop_height', type=int, default=1024)
@@ -82,21 +82,21 @@ def main():
         model_name = moddel_list[args.model]
         model = model_name(num_classes=num_classes, pretrained=True)
 
-    if torch.cuda.is_available():
-        if args.device_ids:
-            device_ids = list(map(int, args.device_ids.split(',')))
-        else:
-            device_ids = None
-        model = nn.DataParallel(model, device_ids=device_ids).cuda()
-    else:
-        raise SystemError('GPU device not found')
+    # if torch.cuda.is_available():
+    #     if args.device_ids:
+    #         device_ids = list(map(int, args.device_ids.split(',')))
+    #     else:
+    #         device_ids = None
+    #     model = nn.DataParallel(model, device_ids=device_ids).cuda()
+    # else:
+    #     raise SystemError('GPU device not found')
 
     if args.type == 'binary':
         loss = LossBinary(jaccard_weight=args.jaccard_weight)
     else:
         loss = LossMulti(num_classes=num_classes, jaccard_weight=args.jaccard_weight)
 
-    cudnn.benchmark = True
+    # cudnn.benchmark = True
 
     def make_loader(file_names, shuffle=False, transform=None, problem_type='binary', batch_size=1):
         return DataLoader(
@@ -104,7 +104,8 @@ def main():
             shuffle=shuffle,
             num_workers=args.workers,
             batch_size=batch_size,
-            pin_memory=torch.cuda.is_available()
+            # pin_memory=torch.cuda.is_available()
+            pin_memory=False  # Changed true -> false
         )
 
     train_file_names, val_file_names = get_split(args.fold)
@@ -130,7 +131,7 @@ def main():
     train_loader = make_loader(train_file_names, shuffle=True, transform=train_transform(p=1), problem_type=args.type,
                                batch_size=args.batch_size)
     valid_loader = make_loader(val_file_names, transform=val_transform(p=1), problem_type=args.type,
-                               batch_size=len(device_ids))
+                               batch_size=len(args.device_ids.split(',')) if args.device_ids else 1)  # Adjusted for CPU usage
 
     root.joinpath('params.json').write_text(
         json.dumps(vars(args), indent=True, sort_keys=True))
@@ -151,7 +152,6 @@ def main():
         fold=args.fold,
         num_classes=num_classes
     )
-
 
 if __name__ == '__main__':
     main()

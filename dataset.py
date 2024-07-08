@@ -27,9 +27,9 @@ class RoboticsDataset(Dataset):
 
         if self.mode == 'train':
             if self.problem_type == 'binary':
-                return ToTensor(image), torch.from_numpy(np.expand_dims(mask, 0)).float()
+                return ToTensor()(image), torch.from_numpy(np.expand_dims(mask, 0)).float()
             else:
-                return ToTensor(image), torch.from_numpy(mask).long()
+                return ToTensor()(image), torch.from_numpy(mask).long()
         else:
             return ToTensor(image), str(img_file_name)
 
