@@ -1,16 +1,10 @@
-from pylab import *
 import cv2
-from dataset import load_image
+import numpy as np
 import torch
-import albumentations
-from utils import cuda
 from generate_masks import get_model
 from albumentations import Compose, Normalize
 from torchvision.transforms import ToTensor
-import matplotlib.pyplot as plt
-from moviepy.editor import ImageSequenceClip
-
-rcParams['figure.figsize'] = 10, 10
+import threading
 
 def img_transform(p=1):
     return Compose([
@@ -38,59 +32,75 @@ def process_one_frame(frame, model):
     mask_array = mask.data[0].cpu().numpy()[0]
     return mask_array > 0
 
-def kalman_filtering(measurement, kalman_filter):
-    kalman_filter.correct(measurement) #update mask with new value
-    predicted_state = kalman_filter.predict() #predict where the mask will be next
-    return predicted_state
+def initialize_kalman_filter():
+    kalman = cv2.KalmanFilter(4, 2)
+    kalman.measurementMatrix = np.array([[1, 0, 0, 0],
+                                         [0, 1, 0, 0]], np.float32)
+    kalman.transitionMatrix = np.array([[1, 0, 1, 0],
+                                        [0, 1, 0, 1],
+                                        [0, 0, 1, 0],
+                                        [0, 0, 0, 1]], np.float32)
+    kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.01  # Decrease process noise
+    kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.1  # Decrease measurement noise
+    kalman.errorCovPost = np.eye(4, dtype=np.float32) * 0.1  # Set initial error covariance
+    return kalman
 
-#get the model
+# Get the model
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-#kalman filtering initialization
-cap = cv2.VideoCapture("./data/videos/c4v4.mp4")
-kalman = cv2.KalmanFilter(4, 2)
-kalman.measurementMatrix = np.array([[1, 0, 0, 0],
-                                     [0, 1, 0, 0]], np.float32)
-kalman.transitionMatrix = np.array([[1, 0, 1, 0],
-                                    [0, 1, 0, 1],
-                                    [0, 0, 1, 0],
-                                    [0, 0, 0, 1]], np.float32)
+# Kalman filtering initialization
+cap = cv2.VideoCapture("./data/videos/c6v5.mp4")
+kalman = initialize_kalman_filter()
 
-#start image analysis
+# Start image analysis
 frames = []
 mask = None
 predicted_mask_position = None
+
+def display_video():
+    while True:
+        if len(frames) > 0:
+            display_frame = cv2.resize(frames[-1], (frames[-1].shape[1] // 4, frames[-1].shape[0] // 4))
+            cv2.imshow('Video with Mask', display_frame)
+            if cv2.waitKey(30) & 0xFF == ord('q'):
+                break
+        else:
+            cv2.waitKey(100)
+
+display_thread = threading.Thread(target=display_video)
+display_thread.start()
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    if mask is None: #first frame: use Unet
+    if mask is None:  # First frame: use Unet
         mask = process_one_frame(frame, model)
         mask_coords = np.column_stack(np.where(mask))
-        initial_position = np.mean(mask_coords, axis=0).astype(np.float32) #Calculate initial mask position
+        initial_position = np.mean(mask_coords, axis=0).astype(np.float32)  # Calculate initial mask position
         kalman.statePre = np.array([initial_position[0], initial_position[1], 0, 0], np.float32)  # Initialize Kalman filter state
+        kalman.statePost = kalman.statePre.copy()  # Ensure statePost is also initialized
         predicted_mask_position = initial_position  # Set initial predicted mask position
-    else: #other frame: use Kalman
+    else:  # Other frames: use Kalman
         measurement = np.mean(np.column_stack(np.where(mask)), axis=0).astype(np.float32)  # Calculate current mask position
-        predicted_mask_position = kalman_filtering(measurement, kalman)[:2]  # Get predicted position from Kalman filter
+        kalman.correct(measurement)  # Update Kalman filter with measurement
+        predicted_mask_position = kalman.predict()[:2]  # Get predicted position from Kalman filter
 
-    #shift mask to the predicted position (as calculated above)
-    dx = int(predicted_mask_position[0] - mask_coords[0][0])
-    dy = int(predicted_mask_position[1] - mask_coords[0][1])
+    # Smooth the movement by limiting the shift amount
+    max_shift = 5  # Maximum pixels to shift per frame
+    dx = int(np.clip(predicted_mask_position[0] - mask_coords[0][0], -max_shift, max_shift))
+    dy = int(np.clip(predicted_mask_position[1] - mask_coords[0][1], -max_shift, max_shift))
     mask = np.roll(mask, shift=dx, axis=0)  # Shift mask in x-axis
     mask = np.roll(mask, shift=dy, axis=1)  # Shift mask in y-axis
 
-    #append masked frame
+    # Append masked frame
     overlaid_frame = mask_overlay(frame, mask)
     frames.append(overlaid_frame)
 
-    print("Finished processing frame {}", len(frames))
+    print("Finished processing frame", len(frames))
 
-#display the final video
+# Display the final video
 cap.release()
-clip = ImageSequenceClip(frames, fps=30)
-clip.ipython_display()
+cv2.destroyAllWindows()
