@@ -39,11 +39,13 @@ def mask_overlay(image, mask, color=(0, 255, 0)):
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-cap = cv2.VideoCapture("./data/videos/c6v5.mp4")
+cap = cv2.VideoCapture("./data/videos/c6v4.mp4")
 
 frames = []
 mask = None
-overlay = None
+mask_array = None
+rectangles = []
+index = 0
 
 def display_video():
     while True:
@@ -67,36 +69,43 @@ while cap.isOpened():
         transformed_image = img_transform(p=1)(image=frame)['image']
         input_image = torch.unsqueeze(ToTensor()(transformed_image), dim=0)
 
-    if mask == None:
-        mask = model(input_image)
-        mask_array = mask.data[0].cpu().numpy()[0]
-        overlay = mask_overlay(frame, (mask_array > 0).astype(np.uint8))
-        frames.append(overlay)
+    if index % 10 == 0: 
+        if mask == None:
+            mask = model(input_image)
+            mask_array = mask.data[0].cpu().numpy()[0]
+            overlay = mask_overlay(frame, (mask_array > 0).astype(np.uint8))
+            frames.append(np.hstack((overlay, overlay)))
+        else:
+            mask_gray = (mask_array > 0).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            rectangles = []
+            
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area > 3000:
+                    ### KALMAN FILTER PREDICTION
+                    prediction = kalman.predict()
+                    x, y, w, h = cv2.boundingRect(cnt)
+
+                    ### KALMAN FILTER CORRECTION
+                    measurement = np.array([[x + w / 2], [y + h / 2]], np.float32)
+                    if measurement[0][0] != 0 and measurement[1][0] != 0:
+                        kalman.correct(measurement)
+                        last_measurement = measurement
+                    else:
+                        measurement = last_measurement
+
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                    rectangles.append([x, y, w, h])
+
+            frames.append(np.hstack((frame, overlay)))
     else:
-        mask_gray = (mask_array > 0).astype(np.uint8) * 255
-        contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area > 3000:
-                ### KALMAN FILTER PREDICTION
-                prediction = kalman.predict()
-                x, y, w, h = cv2.boundingRect(cnt)
+        for rectangle in rectangles:
+            x, y, w, h = rectangle
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3) 
 
-                ### KALMAN FILTER CORRECTION
-                measurement = np.array([[x + w / 2], [y + h / 2]], np.float32)
-                if measurement[0][0] != 0 and measurement[1][0] != 0:
-                    kalman.correct(measurement)
-                    last_measurement = measurement
-                else:
-                    measurement = last_measurement
-
-                cv2.drawContours(frame, [cnt], -1, (0, 255, 0), 3)
-
-        foreground = cv2.bitwise_and(frame, frame, mask=mask_gray)
-        frames.append(frame)
-    
     print("Finished processing frame", len(frames))
+    index += 1
 
 # Display the final video
 cap.release()
