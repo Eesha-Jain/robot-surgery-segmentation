@@ -7,17 +7,18 @@ from utils import cuda
 from generate_masks import get_model
 from albumentations import Compose, Normalize
 from torchvision.transforms import ToTensor
+import threading
 
 rcParams['figure.figsize'] = 10, 10
 
 ### KALMAN FILTER INITIALIZATION
 kalman = cv2.KalmanFilter(4, 2)  # 4 states (x, y, dx, dy), 2 measurements (x, y)
 kalman.measurementMatrix = np.array([[1, 0, 0, 0],
-                                     [0, 1, 0, 0]], np.float32) #indicates that you want the x,y position of the object
+                                     [0, 1, 0, 0]], np.float32)  # indicates that you want the x, y position of the object
 kalman.transitionMatrix = np.array([[1, 0, 1, 0],
                                     [0, 1, 0, 1],
                                     [0, 0, 1, 0],
-                                    [0, 0, 0, 1]], np.float32) #says dx influences x, dy influences y, dx & dy r not influenced by anything
+                                    [0, 0, 0, 1]], np.float32)  # says dx influences x, dy influences y, dx & dy are not influenced by anything
 
 def img_transform(p=1):
     return Compose([
@@ -65,44 +66,60 @@ while cap.isOpened():
     if not ret:
         break
 
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
     with torch.no_grad():
         transformed_image = img_transform(p=1)(image=frame)['image']
         input_image = torch.unsqueeze(ToTensor()(transformed_image), dim=0)
 
-    if index % 10 == 0: 
-        if mask == None:
+    if index % 10 == 0:
+        if mask is None:
             mask = model(input_image)
             mask_array = mask.data[0].cpu().numpy()[0]
             overlay = mask_overlay(frame, (mask_array > 0).astype(np.uint8))
             frames.append(np.hstack((overlay, overlay)))
-        else:
             mask_gray = (mask_array > 0).astype(np.uint8) * 255
             contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        else:
             rectangles = []
-            
+            contours_copy = []
+
             for cnt in contours:
                 area = cv2.contourArea(cnt)
                 if area > 3000:
                     ### KALMAN FILTER PREDICTION
                     prediction = kalman.predict()
+                    pred_x, pred_y = prediction[0], prediction[1]
+
                     x, y, w, h = cv2.boundingRect(cnt)
+                    cx, cy = x + w / 2, y + h / 2
 
                     ### KALMAN FILTER CORRECTION
-                    measurement = np.array([[x + w / 2], [y + h / 2]], np.float32)
-                    if measurement[0][0] != 0 and measurement[1][0] != 0:
-                        kalman.correct(measurement)
-                        last_measurement = measurement
-                    else:
-                        measurement = last_measurement
+                    measurement = np.array([[np.float32(cx)], [np.float32(cy)]])
+                    kalman.correct(measurement)
 
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
-                    rectangles.append([x, y, w, h])
+                    # Update bounding box based on Kalman prediction
+                    pred_x = int(pred_x - w / 2)
+                    pred_y = int(pred_y - h / 2)
+
+                    cv2.rectangle(frame, (pred_x, pred_y), (pred_x + w, pred_y + h), (0, 255, 0), 3)
+                    rectangles.append([pred_x, pred_y, w, h])
+                    rect_contour = np.array([
+                        [[max(pred_x-5, 0), max(pred_y-5, 0)]],
+                        [[min(pred_x + w + 5, frame_width), max(pred_y-5, 0)]],
+                        [[min(pred_x + w + 5, frame_width), min(pred_y + h + 5, frame_height)]],
+                        [[max(pred_x-5, 0), min(pred_y + h + 5, frame_height)]]
+                    ], dtype=np.int32)
+                    contours_copy.append(rect_contour)
 
             frames.append(np.hstack((frame, overlay)))
+            contours = contours_copy
     else:
         for rectangle in rectangles:
             x, y, w, h = rectangle
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3) 
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 3)
+        frames.append(np.hstack((frame, overlay)))
 
     print("Finished processing frame", len(frames))
     index += 1
