@@ -96,20 +96,21 @@ while cap.isOpened():
                     cx, cy = x + w / 2, y + h / 2
 
                     ### KALMAN FILTER CORRECTION
-                    measurement = np.array([[np.float32(cx)], [np.float32(cy)]])
+                    measurement = np.array([[np.float32(x)], [np.float32(y)]])
                     kalman.correct(measurement)
 
                     # Update bounding box based on Kalman prediction
                     pred_x = int(pred_x - w / 2)
                     pred_y = int(pred_y - h / 2)
+                    buffer = 20
 
                     cv2.rectangle(frame, (pred_x, pred_y), (pred_x + w, pred_y + h), (0, 255, 0), 3)
                     rectangles.append([pred_x, pred_y, w, h])
                     rect_contour = np.array([
-                        [[max(pred_x-5, 0), max(pred_y-5, 0)]],
-                        [[min(pred_x + w + 5, frame_width), max(pred_y-5, 0)]],
-                        [[min(pred_x + w + 5, frame_width), min(pred_y + h + 5, frame_height)]],
-                        [[max(pred_x-5, 0), min(pred_y + h + 5, frame_height)]]
+                        [[max(pred_x - buffer, 0), max(pred_y - buffer, 0)]],
+                        [[min(pred_x + w + buffer, frame_width), max(pred_y - buffer, 0)]],
+                        [[min(pred_x + w + buffer, frame_width), min(pred_y + h + buffer, frame_height)]],
+                        [[max(pred_x - buffer, 0), min(pred_y + h + buffer, frame_height)]]
                     ], dtype=np.int32)
                     contours_copy.append(rect_contour)
 
