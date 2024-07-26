@@ -59,9 +59,9 @@ def get_model(model_path, model_type='UNet11', problem_type='binary'):
     state = {key.replace('module.', ''): value for key, value in state['model'].items()}
     model.load_state_dict(state)
 
-    if torch.cuda.is_available():
-        return model.cuda()
-
+    # if torch.cuda.is_available():
+    #     return model.cuda()
+    
     model.eval()
 
     return model
