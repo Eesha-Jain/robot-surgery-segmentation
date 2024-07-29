@@ -2,6 +2,7 @@ from pylab import *
 import cv2
 from dataset import load_image
 import torch
+import numpy as np
 import albumentations
 from utils import cuda
 from generate_masks import get_model
@@ -54,7 +55,7 @@ frames = []
 mask = None
 mask_array = None
 rectangles = []
-buffer = 20
+buffer = 50
 
 def display_video():
     frame_index = 0
@@ -72,78 +73,32 @@ display_thread = threading.Thread(target=display_video)
 display_thread.start()
 
 def runProcessing():
-    ret, frame = cap.read()
-    if not ret:
-        exit
-
-    index = 0
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    mask = model(image_touchup(frame))
-    mask_array = mask.data[0].cpu().numpy()[0]
-    mask_gray = (mask_array > 0).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
     rectangles = []
-    contours_copy = []
-
+    index = 0
+    
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        if index == 0:
-            for cnt in contours:
-                if cv2.contourArea(cnt) > 3000:
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    rect_contour = np.array([
-                        [[max(x - buffer, 0), max(y - buffer, 0)]],
-                        [[min(x + w + buffer, frame_width), max(y - buffer, 0)]],
-                        [[min(x + w + buffer, frame_width), min(y + h + buffer, frame_height)]],
-                        [[max(x - buffer, 0), min(y + h + buffer, frame_height)]]
-                    ], dtype=np.int32)
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
-                    contours_copy.append(rect_contour)
-                    rectangles.append([x,y,w,h])
-
-            frames.append(frame)
-            contours = contours_copy
-        elif index % 10 == 0:
+        if index % 10 == 0:
             rectangles = []
-            contours_copy = []
+            mask = model(image_touchup(frame))
+            mask_array = mask.data[0].cpu().numpy()[0]
+            mask_gray = (mask_array > 0).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             for cnt in contours:
-                if cv2.contourArea(cnt) > 6000:
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    roi = frame[y:y+h, x:x+w]
-
-                    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
-                    contours2, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-                    for cnt2 in contours2:
-                        if cv2.contourArea(cnt2) > 6000:
-                            x2, y2, w2, h2 = cv2.boundingRect(cnt2)
-                            x2 += x
-                            y2 += y
-                            cv2.rectangle(frame, (x2, y2), (x2 + w2, y2 + h2), (0, 255, 0), 5)
-                            rectangles.append([x2, y2, w2, h2])
-                            rect_contour = np.array([
-                                [[max(x2 - buffer, 0), max(y2 - buffer, 0)]],
-                                [[min(x2 + w2 + buffer, frame_width), max(y2 - buffer, 0)]],
-                                [[min(x2 + w2 + buffer, frame_width), min(y2 + h2 + buffer, frame_height)]],
-                                [[max(x2 - buffer, 0), min(y2 + h2 + buffer, frame_height)]]
-                            ], dtype=np.int32)
-                            contours_copy.append(rect_contour)
-            
-            frames.append(frame)
-            contours = contours_copy
+                area = cv2.contourArea(cnt)
+                if area > 3000:
+                    x2, y2, width, height = cv2.boundingRect(cnt)
+                    cv2.rectangle(frame, (x2,y2), (x2+width, y2+height), (0,255,0), 5)
+                    rectangles.append([x2, y2, width, height])
         else:
             for rectangle in rectangles:
                 x, y, w, h = rectangle
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
-            frames.append(frame)
-
+        
+        frames.append(frame)
         print("Finished processing frame", len(frames))
         index += 1
 
