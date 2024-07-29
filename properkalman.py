@@ -74,6 +74,7 @@ def track_instrument(video_path, model, model2=None):
     
     index = 0
     rectangles = []
+    contours = None
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -87,11 +88,6 @@ def track_instrument(video_path, model, model2=None):
             mask = model(input_image)
             mask_array = mask.data[0].cpu().numpy()[0] 
             y, x = np.where(mask_array > 0)
-            
-            # Predict the next position
-            predicted_state = kf.predict()                
-            measured_state = np.array([[np.mean(x)], [np.mean(y)]], np.float32)
-            kf.correct(measured_state)
 
             # Find contours and draw bounding boxes
             mask_gray = (mask_array > 0).astype(np.uint8) * 255
@@ -99,17 +95,24 @@ def track_instrument(video_path, model, model2=None):
             for contour in contours:
                 if cv2.contourArea(contour) > 3000:
                     x, y, w, h = cv2.boundingRect(contour)
+                    measurement = np.array([[np.float32(x)], [np.float32(y)]])
+                    kf.correct(measurement)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
-                    rectangles.append([x,y,x+w,y+h])
+                    rectangles.append([x, y, w, h])
 
-            # Draw the predicted position
-            predicted_x, predicted_y = predicted_state[0], predicted_state[1]
-            print(predicted_x)
-            cv2.circle(frame, (int(predicted_x), int(predicted_y)), 100, (0, 0, 255), 5)
+            #Add frame to frames array
             frames.append(frame)
         else:
-            for rectangle in rectangles:
-                cv2.rectangle(frame, (rectangle[0], rectangle[1]), (rectangle[2], rectangle[3]), (0, 255, 0), 2)
+            for i in range(len(contours)):
+                if len(rectangles) > i:
+                    x, y, w, h = rectangles[i][0], rectangles[i][1], rectangles[i][2], rectangles[i][3]
+                    kf.correct(np.array([[np.float32(x)], [np.float32(y)]]))
+
+                    #Predict position of instruments
+                    prediction = kf.predict()
+                    pred_x, pred_y = prediction[0][0], prediction[1][0]
+                    cv2.rectangle(frame, (int(pred_x), int(pred_y)), (int(pred_x + w), int(pred_y + h)), (0, 255, 0), 5)
+            
             frames.append(frame)
 
         index += 1
