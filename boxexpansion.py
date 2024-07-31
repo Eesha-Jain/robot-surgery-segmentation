@@ -60,7 +60,7 @@ buffer = 50
 def display_video():
     frame_index = 0
     while True:
-        cv2.waitKey(100)
+        cv2.waitKey(1000)
         if frame_index < len(frames):
             display_frame = cv2.resize(frames[frame_index], (frames[frame_index].shape[1] // 4, frames[frame_index].shape[0] // 4))
             cv2.imshow('Video with Bounding Box', display_frame)
@@ -76,16 +76,11 @@ def runProcessing():
     ret, frame = cap.read()
     if not ret:
         exit
-
-    index = 0
+    
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    mask = model(image_touchup(frame))
-    mask_array = mask.data[0].cpu().numpy()[0]
-    mask_gray = (mask_array > 0).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
+    index = 0
     rectangles = []
     contours_copy = []
 
@@ -94,12 +89,20 @@ def runProcessing():
         if not ret:
             break
 
-        if index == 0:
+        if index % 50 == 0:
+            rectangles = []
+            contours_copy = []
+            
+            mask = model(image_touchup(frame))
+            mask_array = mask.data[0].cpu().numpy()[0]
+            mask_gray = (mask_array > 0).astype(np.uint8) * 255
+            contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
             for cnt in contours:
                 area = cv2.contourArea(cnt)
                 if area > 6000:
                     x2, y2, width, height = cv2.boundingRect(cnt)
-                    cv2.rectangle(frame, (x2,y2), (x2+width, y2+height), (0,255,0), 5)
+                    cv2.rectangle(frame, (x2,y2), (x2+width, y2+height), (255, 0, 0), 5)
                     rectangles.append([x2, y2, width, height])
                     rect_contour = np.array([
                         [[max(x2 - buffer, 0), max(y2 - buffer, 0)]],
@@ -114,20 +117,26 @@ def runProcessing():
         elif index % 10 == 0:
             rectangles = []
             contours_copy = []
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
             for cnt in contours:
-                if cv2.contourArea(cnt) > 3000:
+                if cv2.contourArea(cnt) > 6000:
                     x, y, w, h = cv2.boundingRect(cnt)
                     roi = frame[y:y+h, x:x+w]
 
-                    ### DEFINE LOWER AND UPPER BOUNDARIES OF THE METAL GRAY INSTRUMENTS IN HSV
-                    lower_gray = np.array([0, 0, 50])
-                    upper_gray = np.array([179, 50, 255])
+                    # cv2.imwrite(f"frames/{index}_roi{y}.png", roi)
+                    # cv2.imwrite(f"frames/{index}_mask_gray{y}.png", mask_gray)
 
-                    ### APPLY HSV FILTERING TO THE GRABCUT MASK
-                    mask_gray = cv2.inRange(roi, lower_gray, upper_gray)
+                    ### DEFINE LOWER AND UPPER BOUNDARIES OF THE METAL GRAY INSTRUMENTS IN HSV
+                    lower_color = np.array([90, 0, 0])
+                    upper_color = np.array([255, 200, 200])
+
+                    ### APPLY HSV FILTERING TO THE MASK
+                    mask_gray = cv2.inRange(roi, lower_color, upper_color)
 
                     ### REMOVE NOISE FROM MASK
-                    kernel = np.ones((3, 3), np.uint8)  # Optimized kernel size
+                    kernel = np.ones((3, 3), np.uint8)
                     mask_gray = cv2.morphologyEx(mask_gray, cv2.MORPH_OPEN, kernel)
                     mask_gray = cv2.morphologyEx(mask_gray, cv2.MORPH_CLOSE, kernel)
 
@@ -137,7 +146,7 @@ def runProcessing():
                     ### DRAW BOX AROUND METAL INSTRUMENTS
                     for cnt in contours:
                         area = cv2.contourArea(cnt)
-                        if area > 3000:
+                        if area > 6000:
                             x2, y2, width, height = cv2.boundingRect(cnt)
                             x2 += x
                             y2 += y
@@ -150,8 +159,8 @@ def runProcessing():
                                 [[max(x2 - buffer, 0), min(y2 + height + buffer, frame_height)]]
                             ], dtype=np.int32)
                             contours_copy.append(rect_contour)
+                            break
             
-            frames.append(frame)
             contours = contours_copy
         else:
             for rectangle in rectangles:

@@ -152,11 +152,8 @@ def track_instrument(dir, model):
                     iou_array.append(iou)
                     print(f"IoU: {iou:.2f}, Detected box: {detected_box}, Ground truth box: {gt_box}")
 
-        print(f"AVERAGE IOU FOR FRAME: {np.average(iou_array): .2f}")
-
-        #proceed to next frame
+        print(f"AVERAGE IOU FOR FRAME {len(frames)}: {np.average(iou_array): .2f}\n")
         index += 1
-        print("Finished processing frame", len(frames))
 
     cv2.destroyAllWindows()
 
