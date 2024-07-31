@@ -49,14 +49,18 @@ def preprocess_frame(frame):
 
 def extract_bounding_boxes(mask, frame):
     mask_gray = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-    mask_gray = (mask_gray > 0).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    unique_shades = np.unique(mask_gray)
     boxes = []
-    for contour in contours:
-        if cv2.contourArea(contour) > 6000:
-            x, y, w, h = cv2.boundingRect(contour)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 5)
-            boxes.append([x, y, w, h])
+    
+    for shade in unique_shades:
+        if shade == 0: #skip background
+            continue
+        
+        binary_mask = np.uint8(mask_gray == shade) * 255
+        x, y, w, h = cv2.boundingRect(binary_mask)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 5)
+        boxes.append([x, y, w, h])
+    
     return boxes
 
 def bb_intersection_over_union(boxA, boxB):
@@ -81,7 +85,7 @@ frames = []
 def display_images():
     frame_index = 0
     while True:
-        cv2.waitKey(2000)
+        cv2.waitKey(1000)
         if frame_index < len(frames):
             display_frame = cv2.resize(frames[frame_index], (frames[frame_index].shape[1] // 4, frames[frame_index].shape[0] // 4))
             cv2.imshow('Images with Bounding Box', display_frame)
@@ -97,7 +101,7 @@ display_thread.start()
 
 def track_instrument(dir, model):
     frame_files = sorted(Path(dir + "images").glob('*.jpg'))
-    ground_truth_files = sorted(Path(dir + "binary_masks").glob('*.png'))
+    ground_truth_files = sorted(Path(dir + "instruments_masks").glob('*.png'))
     index = 0
     rectangles = []
     contours = None
