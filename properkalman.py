@@ -8,22 +8,36 @@ import threading
 import os
 from pathlib import Path
 
-# Initialize Kalman Filter
-kf = cv2.KalmanFilter(4, 2)  # 4 states (x, y, dx, dy), 2 measurements (x, y)
-kf.measurementMatrix = np.array([[1, 0, 0, 0],
-                                 [0, 1, 0, 0]], np.float32)  # indicates that you want the x, y position of the object
-kf.transitionMatrix = np.array([[1, 0, 1, 0],
-                                [0, 1, 0, 1],
-                                [0, 0, 1, 0],
-                                [0, 0, 0, 1]], np.float32)
+class KalmanFilter:
+    def __init__(self):
+        self.kf = cv2.KalmanFilter(4, 2)  # 4 states (x, y, dx, dy), 2 measurements (x, y)
+        self.kf.measurementMatrix = np.array([[1, 0, 0, 0],
+                                        [0, 1, 0, 0]], np.float32)  # indicates that you want the x, y position of the object
+        self.kf.transitionMatrix = np.array([[1, 0, 1, 0],
+                                        [0, 1, 0, 1],
+                                        [0, 0, 1, 0],
+                                        [0, 0, 0, 1]], np.float32)
+      
+    def set_bounding_box(self, x, y, w, h):
+        self.kf.statePre = np.array([x, y, 0, 0], np.float32)
+        self.kf.statePost = np.array([x, y, 0, 0], np.float32)
+        self.kf.errorCovPre = np.eye(4, dtype=np.float32)
+        self.kf.errorCovPost = np.eye(4, dtype=np.float32)
+        self.x = x
+        self.y = y
+        self.w = w 
+        self.h = h
+        self.correct(x, y)
 
-# Function to initialize Kalman Filter with the first detected position
-def initialize_kalman_filter(x, y):
-    kf.statePre = np.array([x, y, 0, 0], np.float32)
-    kf.statePost = np.array([x, y, 0, 0], np.float32)
-    kf.errorCovPre = np.eye(4, dtype=np.float32)
-    kf.errorCovPost = np.eye(4, dtype=np.float32)
-    return kf
+    def correct(self, x, y):
+        self.kf.correct(np.array([[np.float32(x)], [np.float32(y)]]))
+
+    def predict(self):
+        prediction = self.kf.predict()
+        pred_x, pred_y = prediction[0], prediction[1]
+        self.x = pred_x
+        self.y = pred_y
+        return (pred_x, pred_y)
 
 def mask_overlay(image, mask, color=(0, 255, 0)):
     """
@@ -127,21 +141,22 @@ def track_instrument(dir, model):
             for contour in contours:
                 if cv2.contourArea(contour) > 6000:
                     x, y, w, h = cv2.boundingRect(contour)
-                    measurement = np.array([[np.float32(x)], [np.float32(y)]])
-                    kf.correct(measurement)
+                    kf = KalmanFilter()
+                    kf.set_bounding_box(x, y, w, h)
+                    
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
-                    rectangles.append([x, y, w, h])
+                    rectangles.append(kf)
 
             frames.append(frame)
         else:
             for i in range(len(contours)):
                 if len(rectangles) > i:
-                    x, y, w, h = rectangles[i][0], rectangles[i][1], rectangles[i][2], rectangles[i][3]
-                    kf.correct(np.array([[np.float32(x)], [np.float32(y)]]))
+                    kf = rectangles[i]
+                    x, y, w, h = kf.x, kf.y, kf.w, kf.h
+                    kf.correct(x, y)
 
                     # Predict position of instruments
-                    prediction = kf.predict()
-                    pred_x, pred_y = prediction[0][0], prediction[1][0]
+                    pred_x, pred_y = kf.predict()
                     cv2.rectangle(frame, (int(pred_x), int(pred_y)), (int(pred_x + w), int(pred_y + h)), (0, 255, 0), 5)
 
             frames.append(frame)
@@ -149,18 +164,18 @@ def track_instrument(dir, model):
         #calculate iou in the frame
         ground_truth_boxes = extract_bounding_boxes(ground_truth, frame)
         iou_array = []
-        for detected_box in rectangles:
+        for kf in rectangles:
             for gt_box in ground_truth_boxes:
+                detected_box = [kf.x, kf.y, kf.w, kf.h]
                 iou = bb_intersection_over_union(detected_box, gt_box)
                 if iou > 0.1 and iou < 1:
                     iou_array.append(iou)
-                    print(f"IoU: {iou:.2f}, Detected box: {detected_box}, Ground truth box: {gt_box}")
+                    # print(f"IoU: {iou:.2f}, Detected box: {detected_box}, Ground truth box: {gt_box}")
 
-        print(f"AVERAGE IOU FOR FRAME {len(frames)}: {np.average(iou_array): .2f}\n")
+        print(f"AVERAGE IOU FOR FRAME {len(frames)}: {np.average(iou_array): .2f}")
         index += 1
 
     cv2.destroyAllWindows()
-
 
 # Example usage
 model_path = 'data/models/unet11_binary_20/model_0.pt'
