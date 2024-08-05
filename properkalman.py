@@ -99,6 +99,7 @@ def track_instrument(dir, model):
     ground_truth_files = sorted(Path(dir + "instruments_masks").glob('*.png'))
     index = 0
     rectangles = []
+    total_iou_array = []
     contours = None
 
     for i in range(len(frame_files)):
@@ -145,39 +146,20 @@ def track_instrument(dir, model):
                 iou = bb_intersection_over_union(detected_box, gt_box)
                 if iou > 0.1 and iou < 1:
                     iou_array.append(iou)
-
-        print(f"AVERAGE IOU FOR FRAME {len(frames)}: {np.average(iou_array): .2f}")
-
-        # Generate graph of predicted centers
-        if rectangles:
-            pred_box = rectangles[0]
-            pred_center = (pred_box[0] + pred_box[2] / 2, pred_box[1] + pred_box[3] / 2)
-            centers_pred.append(pred_center)
-
-            gt_box = ground_truth_boxes[0] if ground_truth_boxes else [0, 0, 0, 0]  # Default if no ground truth
-            gt_center = (gt_box[0] + gt_box[2] / 2, gt_box[1] + gt_box[3] / 2)
-            centers_gt.append(gt_center)
+                    total_iou_array.append(iou)
         
-        if index % 50 == 0 and index > 0:
-            plt.figure()
-            plt.plot([c[0] for c in centers_gt], [c[1] for c in centers_gt], 'ro-', label='Ground Truth')
-            plt.plot([c[0] for c in centers_pred], [c[1] for c in centers_pred], 'bo-', label='Predicted')
-            plt.xlabel('X')
-            plt.ylabel('Y')
-            plt.title('Comparison of Bounding Box Centers')
-            plt.legend()
-            plt.savefig(f'frames/1_graph_frame_{index}.png')
-            plt.close()
+        print(f"F{len(frames)}: {np.average(iou_array): .2f}")
 
         index += 1
 
+    print(f"Total IOU: {np.average(total_iou_array): .2f}")
     cv2.destroyAllWindows()
 
 # Example usage
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-dir = './data/cropped_train/instrument_dataset_1/'
+dir = './data/cropped_train/instrument_dataset_3/'
 track_instrument(dir, model)
 
 # Wait for display thread to finish
