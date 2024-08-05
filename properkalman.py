@@ -7,42 +7,25 @@ from generate_masks import get_model
 import threading
 import os
 from pathlib import Path
+import matplotlib.pyplot as plt
 
-class KalmanFilter:
-    def __init__(self):
-        self.kf = cv2.KalmanFilter(4, 2)  # 4 states (x, y, dx, dy), 2 measurements (x, y)
-        self.kf.measurementMatrix = np.array([[1, 0, 0, 0],
-                                        [0, 1, 0, 0]], np.float32)  # indicates that you want the x, y position of the object
-        self.kf.transitionMatrix = np.array([[1, 0, 1, 0],
-                                        [0, 1, 0, 1],
-                                        [0, 0, 1, 0],
-                                        [0, 0, 0, 1]], np.float32)
-      
-    def set_bounding_box(self, x, y, w, h):
-        self.kf.statePre = np.array([x, y, 0, 0], np.float32)
-        self.kf.statePost = np.array([x, y, 0, 0], np.float32)
-        self.kf.errorCovPre = np.eye(4, dtype=np.float32)
-        self.kf.errorCovPost = np.eye(4, dtype=np.float32)
-        self.x = x
-        self.y = y
-        self.w = w 
-        self.h = h
-        self.correct(x, y)
+# Initialize Kalman Filter
+kf = cv2.KalmanFilter(4, 2)  # 4 states (x, y, dx, dy), 2 measurements (x, y)
+kf.measurementMatrix = np.array([[1, 0, 0, 0],
+                                 [0, 1, 0, 0]], np.float32)  # indicates that you want the x, y position of the object
+kf.transitionMatrix = np.array([[1, 0, 1, 0],
+                                [0, 1, 0, 1],
+                                [0, 0, 1, 0],
+                                [0, 0, 0, 1]], np.float32)
 
-    def correct(self, x, y):
-        self.kf.correct(np.array([[np.float32(x)], [np.float32(y)]]))
-
-    def predict(self):
-        prediction = self.kf.predict()
-        pred_x, pred_y = prediction[0], prediction[1]
-        self.x = pred_x
-        self.y = pred_y
-        return (pred_x, pred_y)
+def initialize_kalman_filter(x, y):
+    kf.statePre = np.array([x, y, 0, 0], np.float32)
+    kf.statePost = np.array([x, y, 0, 0], np.float32)
+    kf.errorCovPre = np.eye(4, dtype=np.float32)
+    kf.errorCovPost = np.eye(4, dtype=np.float32)
+    return kf
 
 def mask_overlay(image, mask, color=(0, 255, 0)):
-    """
-    Helper function to visualize mask on the top of the car
-    """
     mask = np.dstack((mask, mask, mask)) * np.array(color)
     mask = mask.astype(np.uint8)
     weighted_sum = cv2.addWeighted(mask, 0.5, image, 0.5, 0.)
@@ -83,18 +66,16 @@ def bb_intersection_over_union(boxA, boxB):
     xB = min(boxA[0] + boxA[2], boxB[0] + boxB[2])
     yB = min(boxA[1] + boxA[3], boxB[1] + boxB[3])
     
-    # compute the area of intersection rectangle
     interArea = (xB - xA) * (yB - yA)
-    
-    # compute the area of both the prediction and ground-truth rectangles
     boxAArea = boxA[2] * boxA[3]
-    boxBArea = boxB[2] * boxB[3] - boxB[1]
+    boxBArea = boxB[2] * boxB[3]
     
-    # compute the intersection over union
     iou = interArea / float(boxAArea + boxBArea - interArea)
     return iou
 
 frames = []
+centers_gt = []
+centers_pred = []
 
 def display_images():
     frame_index = 0
@@ -129,50 +110,65 @@ def track_instrument(dir, model):
 
         if index % 10 == 0:
             rectangles = []
-            # Update the Kalman Filter with the detected position
             input_image = preprocess_frame(frame)
             mask = model(input_image)
             mask_array = mask.data[0].cpu().numpy()[0]
             y, x = np.where(mask_array > 0)
 
-            # Find contours and draw bounding boxes
             mask_gray = (mask_array > 0).astype(np.uint8) * 255
             contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
                 if cv2.contourArea(contour) > 6000:
                     x, y, w, h = cv2.boundingRect(contour)
-                    kf = KalmanFilter()
-                    kf.set_bounding_box(x, y, w, h)
-                    
+                    measurement = np.array([[np.float32(x)], [np.float32(y)]])
+                    kf.correct(measurement)
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
-                    rectangles.append(kf)
+                    rectangles.append([x, y, w, h])
 
             frames.append(frame)
         else:
             for i in range(len(contours)):
                 if len(rectangles) > i:
-                    kf = rectangles[i]
-                    x, y, w, h = kf.x, kf.y, kf.w, kf.h
-                    kf.correct(x, y)
+                    x, y, w, h = rectangles[i][0], rectangles[i][1], rectangles[i][2], rectangles[i][3]
+                    kf.correct(np.array([[np.float32(x)], [np.float32(y)]]))
 
-                    # Predict position of instruments
-                    pred_x, pred_y = kf.predict()
+                    prediction = kf.predict()
+                    pred_x, pred_y = prediction[0][0], prediction[1][0]
                     cv2.rectangle(frame, (int(pred_x), int(pred_y)), (int(pred_x + w), int(pred_y + h)), (0, 255, 0), 5)
 
             frames.append(frame)
         
-        #calculate iou in the frame
         ground_truth_boxes = extract_bounding_boxes(ground_truth, frame)
         iou_array = []
-        for kf in rectangles:
+        for detected_box in rectangles:
             for gt_box in ground_truth_boxes:
-                detected_box = [kf.x, kf.y, kf.w, kf.h]
                 iou = bb_intersection_over_union(detected_box, gt_box)
                 if iou > 0.1 and iou < 1:
                     iou_array.append(iou)
-                    # print(f"IoU: {iou:.2f}, Detected box: {detected_box}, Ground truth box: {gt_box}")
 
         print(f"AVERAGE IOU FOR FRAME {len(frames)}: {np.average(iou_array): .2f}")
+
+        # Generate graph of predicted centers
+        if rectangles:
+            pred_box = rectangles[0]
+            pred_center = (pred_box[0] + pred_box[2] / 2, pred_box[1] + pred_box[3] / 2)
+            centers_pred.append(pred_center)
+
+            gt_box = ground_truth_boxes[0] if ground_truth_boxes else [0, 0, 0, 0]  # Default if no ground truth
+            gt_center = (gt_box[0] + gt_box[2] / 2, gt_box[1] + gt_box[3] / 2)
+            centers_gt.append(gt_center)
+        
+        if index % 50 == 0 and index > 0:
+            plt.figure()
+            plt.plot([c[0] for c in centers_gt], [c[1] for c in centers_gt], 'ro-', label='Ground Truth')
+            plt.plot([c[0] for c in centers_pred], [c[1] for c in centers_pred], 'bo-', label='Predicted')
+            plt.xlabel('X')
+            plt.ylabel('Y')
+            plt.title('Comparison of Bounding Box Centers')
+            plt.legend()
+            plt.savefig(f'frames/1_graph_frame_{index}.png')
+            plt.close()
+
         index += 1
 
     cv2.destroyAllWindows()

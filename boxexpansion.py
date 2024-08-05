@@ -125,8 +125,8 @@ def runProcessing():
                     x, y, w, h = cv2.boundingRect(cnt)
                     roi = frame[y:y+h, x:x+w]
 
-                    # cv2.imwrite(f"frames/{index}_roi{y}.png", roi)
-                    # cv2.imwrite(f"frames/{index}_mask_gray{y}.png", mask_gray)
+                    cv2.imwrite(f"frames/{index}_roi{y}.png", roi)
+                    cv2.imwrite(f"frames/{index}_mask_gray{y}.png", mask_gray)
 
                     ### DEFINE LOWER AND UPPER BOUNDARIES OF THE METAL GRAY INSTRUMENTS IN HSV
                     lower_color = np.array([90, 0, 0])
