@@ -10,6 +10,7 @@ from albumentations import Compose, Normalize
 from torchvision.transforms import ToTensor
 import threading
 import time
+import json
 
 rcParams['figure.figsize'] = 10, 10
 
@@ -49,13 +50,12 @@ def image_touchup(frame):
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-cap = cv2.VideoCapture("./data/videos/c6v4.mp4")
+VIDEO_NAME = "c7v11"
+cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
 
 frames = []
-mask = None
-mask_array = None
-rectangles = []
-buffer = 50
+rectangles_per_frame = {}
+index = 0
 
 def display_video():
     frame_index = 0
@@ -69,40 +69,44 @@ def display_video():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
-display_thread = threading.Thread(target=display_video)
-display_thread.start()
+# display_thread = threading.Thread(target=display_video)
+# display_thread.start()
 
 def runProcessing():
-    rectangles = []
-    index = 0
-    
+    global rectangles_per_frame
+    global index 
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        if index % 10 == 0:
-            rectangles = []
-            mask = model(image_touchup(frame))
-            mask_array = mask.data[0].cpu().numpy()[0]
-            mask_gray = (mask_array > 0).astype(np.uint8) * 255
-            contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area > 3000:
-                    x2, y2, width, height = cv2.boundingRect(cnt)
-                    cv2.rectangle(frame, (x2,y2), (x2+width, y2+height), (0,255,0), 5)
-                    rectangles.append([x2, y2, width, height])
-        else:
-            for rectangle in rectangles:
-                x, y, w, h = rectangle
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
+        # Process every frame with the model
+        mask = model(image_touchup(frame))
+        mask_array = mask.data[0].cpu().numpy()[0]
+        mask_gray = (mask_array > 0).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        rectangles = []
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area > 15000:
+                x2, y2, width, height = cv2.boundingRect(cnt)
+                cv2.rectangle(frame, (x2, y2), (x2 + width, y2 + height), (0, 255, 0), 5)
+                rectangles.append([x2, y2, width, height])
         
+        # Save the rectangles for this frame
+        rectangles_per_frame[index + 1] = rectangles
+
         frames.append(frame)
-        print("Finished processing frame", len(frames))
+        print("Finished processing frame", index + 1)
         index += 1
 
-# Display the final video
+# Start processing
 runProcessing()
 cap.release()
 cv2.destroyAllWindows()
+
+# Save results to JSON
+with open(f'./data/videos/{VIDEO_NAME}.json', 'w') as json_file:
+    json.dump(rectangles_per_frame, json_file, indent=4)
+print("Output saved to output.json")
