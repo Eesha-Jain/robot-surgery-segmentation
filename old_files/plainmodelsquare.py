@@ -1,11 +1,15 @@
 from pylab import *
 import cv2
+from dataset import load_image
 import torch
 import numpy as np
+import albumentations
+from utils import cuda
 from generate_masks import get_model
 from albumentations import Compose, Normalize
 from torchvision.transforms import ToTensor
 import threading
+import time
 import json
 
 rcParams['figure.figsize'] = 10, 10
@@ -46,19 +50,12 @@ def image_touchup(frame):
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-VIDEO_NAME = "c6v5"
+VIDEO_NAME = "c7v11"
 cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
 
 frames = []
 rectangles_per_frame = {}
 index = 0
-
-def draw_rotated_box(image, box, color=(0, 255, 0)):
-    center, (width, height), angle = box
-    box_points = cv2.boxPoints(box)
-    box_points = np.int0(box_points)
-    cv2.drawContours(image, [box_points], 0, color, 5)
-    return image
 
 def display_video():
     frame_index = 0
@@ -93,10 +90,9 @@ def runProcessing():
         for cnt in contours:
             area = cv2.contourArea(cnt)
             if area > 15000:
-                # Get the rotated bounding box
-                rect = cv2.minAreaRect(cnt)
-                frame = draw_rotated_box(frame, rect, color=(0, 255, 0))
-                rectangles.append(rect)
+                x2, y2, width, height = cv2.boundingRect(cnt)
+                cv2.rectangle(frame, (x2, y2), (x2 + width, y2 + height), (0, 255, 0), 5)
+                rectangles.append([x2, y2, width, height])
         
         # Save the rectangles for this frame
         rectangles_per_frame[index + 1] = rectangles
@@ -111,12 +107,6 @@ cap.release()
 cv2.destroyAllWindows()
 
 # Save results to JSON
-def box_to_list(box):
-    center, (width, height), angle = box
-    return [center[0], center[1], width, height, angle]
-
-rectangles_per_frame_list = {k: [box_to_list(box) for box in v] for k, v in rectangles_per_frame.items()}
-
-with open(f'./data/videos/{VIDEO_NAME}_tilt.json', 'w') as json_file:
-    json.dump(rectangles_per_frame_list, json_file, indent=4)
+with open(f'./data/videos/{VIDEO_NAME}.json', 'w') as json_file:
+    json.dump(rectangles_per_frame, json_file, indent=4)
 print("Output saved to output.json")

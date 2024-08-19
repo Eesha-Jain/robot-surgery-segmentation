@@ -46,7 +46,7 @@ def image_touchup(frame):
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-VIDEO_NAME = "c6v5"
+VIDEO_NAME = "c7v11"
 cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
 
 frames = []

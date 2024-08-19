@@ -6,7 +6,9 @@ from albumentations import Compose, Normalize
 from torchvision.transforms import ToTensor
 from generate_masks import get_model
 import threading
-from shapely.geometry import Polygon
+import os
+from pathlib import Path
+import matplotlib.pyplot as plt
 
 # Initialize Kalman Filter
 def initialize_kalman_filter(x=0, y=0):
@@ -42,36 +44,17 @@ def preprocess_frame(frame):
     input_image = torch.unsqueeze(ToTensor()(transformed_image), dim=0)
     return input_image
 
-def draw_rotated_box(image, box, color=(0, 255, 0)):
-    center, (width, height), angle = box
-    box_points = cv2.boxPoints(box)
-    box_points = np.int0(box_points)
-    cv2.drawContours(image, [box_points], 0, color, 2)
-    return image
-
-def box_to_polygon(box):
-    center, (width, height), angle = box
-    rect = [(-width / 2, -height / 2),
-            (width / 2, -height / 2),
-            (width / 2, height / 2),
-            (-width / 2, height / 2)]
-    
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1)
-    rect = np.array(rect)
-    rect = np.dot(rect, rotation_matrix[:2, :2].T) + rotation_matrix[:2, 2]
-    
-    return Polygon(rect)
-
 def bb_intersection_over_union(boxA, boxB):
-    polyA = box_to_polygon(boxA)
-    polyB = box_to_polygon(boxB)
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[0] + boxA[2], boxB[0] + boxB[2])
+    yB = min(boxA[1] + boxA[3], boxB[1] + boxB[3])
     
-    inter_area = polyA.intersection(polyB).area
-    union_area = polyA.union(polyB).area
+    interArea = (xB - xA) * (yB - yA)
+    boxAArea = boxA[2] * boxA[3]
+    boxBArea = boxB[2] * boxB[3]
     
-    if union_area == 0:
-        return 0
-    iou = inter_area / union_area
+    iou = interArea / float(boxAArea + boxBArea - interArea)
     return iou
 
 frames = []
@@ -121,51 +104,42 @@ def track_instrument(cap, model, json_content):
             i = 0
             for contour in contours:
                 if cv2.contourArea(contour) > 15000 and len(kfs) > i:
-                    rect = cv2.minAreaRect(contour)
-                    frame = draw_rotated_box(frame, rect, color=(0, 255, 0))
-                    
-                    rectangles.append(rect)
-                    predicted_boxes.append(rect)
+                    x, y, w, h = cv2.boundingRect(contour)
+                    measurement = np.array([[np.float32(x)], [np.float32(y)]])
+                    kfs[i].correct(measurement)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 5)
+                    rectangles.append([x, y, w, h])
+                    predicted_boxes.append([x, y, w, h])
                     i += 1
 
             frames.append(frame)
         else:
             for i in range(len(rectangles)):
                 if len(kfs) > i:
-                    rect = rectangles[i]
-                    center, (width, height), angle = rect
-                    kfs[i].correct(np.array([[np.float32(center[0])], [np.float32(center[1])]]))
+                    x, y, w, h = rectangles[i][0], rectangles[i][1], rectangles[i][2], rectangles[i][3]
+                    kfs[i].correct(np.array([[np.float32(x+w/2)], [np.float32(y+h/2)]]))
 
                     prediction = kfs[i].predict()
-                    pred_center = (prediction[0], prediction[1])
-                    pred_rect = (pred_center, (width, height), angle)
-                    
-                    frame = draw_rotated_box(frame, pred_rect, color=(0, 255, 0))
-                    predicted_boxes.append(pred_rect)
+                    pred_x, pred_y = prediction[0]-w/2, prediction[1]-h/2
+                    cv2.rectangle(frame, (int(pred_x), int(pred_y)), (int(pred_x + w), int(pred_y + h)), (0, 255, 0), 5)
+                    predicted_boxes.append([pred_x, pred_y, w, h])
 
             frames.append(frame)
 
         index += 1
-        ground_truth_boxes = json_content.get(str(index), [])
+        ground_truth_boxes = json_content[str(index)]
         iou_array = []
         for gt_box in ground_truth_boxes:
-            gt_center = (gt_box[0], gt_box[1])
-            gt_width = gt_box[2]
-            gt_height = gt_box[3]
-            gt_angle = gt_box[4]
-            gt_rect = (gt_center, (gt_width, gt_height), gt_angle)
-            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.int0)], 0, (0, 0, 255), 2)
+            cv2.rectangle(frame, (gt_box[0], gt_box[1]), (gt_box[0] + gt_box[2], gt_box[1] + gt_box[3]), (0, 0, 255), 5)
             for detected_box in predicted_boxes:
-                iou = bb_intersection_over_union(detected_box, gt_rect)
+                iou = bb_intersection_over_union(detected_box, gt_box)
                 if iou > 0.1 and iou < 1:
                     iou_array.append(iou)
                     total_iou_array.append(iou)
         
-        if iou_array:
-            print(f"F{index}: {np.average(iou_array): .2f}")
+        print(f"F{index}: {np.average(iou_array): .2f}")
 
-    if total_iou_array:
-        print(f"Total IOU: {np.average(total_iou_array): .2f}")
+    print(f"Total IOU: {np.average(total_iou_array): .2f}")
     cv2.destroyAllWindows()
 
 # Example usage
