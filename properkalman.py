@@ -7,6 +7,7 @@ from torchvision.transforms import ToTensor
 from generate_masks import get_model
 import threading
 from shapely.geometry import Polygon
+import time
 
 # Initialize Kalman Filter
 def initialize_kalman_filter(x=0, y=0):
@@ -45,32 +46,32 @@ def preprocess_frame(frame):
 def draw_rotated_box(image, box, color=(0, 255, 0)):
     center, (width, height), angle = box
     box_points = cv2.boxPoints(box)
-    box_points = np.int0(box_points)
-    cv2.drawContours(image, [box_points], 0, color, 2)
+    box_points = np.intp(box_points)
+    cv2.drawContours(image, [box_points], 0, color, 5)
     return image
 
 def box_to_polygon(box):
     center, (width, height), angle = box
-    rect = [(-width / 2, -height / 2),
-            (width / 2, -height / 2),
-            (width / 2, height / 2),
-            (-width / 2, height / 2)]
-    
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1)
-    rect = np.array(rect)
-    rect = np.dot(rect, rotation_matrix[:2, :2].T) + rotation_matrix[:2, 2]
-    
+    rect = cv2.boxPoints(box)
+    rect = np.intp(rect)
     return Polygon(rect)
 
 def bb_intersection_over_union(boxA, boxB):
+    # Convert the boxes to polygons
     polyA = box_to_polygon(boxA)
     polyB = box_to_polygon(boxB)
     
-    inter_area = polyA.intersection(polyB).area
-    union_area = polyA.union(polyB).area
+    # Compute the intersection and union of the polygons
+    intersection_poly = polyA.intersection(polyB)
+    union_poly = polyA.union(polyB)
+    
+    # Calculate areas
+    inter_area = intersection_poly.area
+    union_area = union_poly.area
     
     if union_area == 0:
         return 0
+    
     iou = inter_area / union_area
     return iou
 
@@ -110,6 +111,7 @@ def track_instrument(cap, model, json_content):
             
         predicted_boxes = []
         if index % 10 == 0:
+            t0 = time.time()
             rectangles = []
             input_image = preprocess_frame(frame)
             mask = model(input_image)
@@ -123,13 +125,18 @@ def track_instrument(cap, model, json_content):
                 if cv2.contourArea(contour) > 15000 and len(kfs) > i:
                     rect = cv2.minAreaRect(contour)
                     frame = draw_rotated_box(frame, rect, color=(0, 255, 0))
+                    kfs[i].correct(np.array([[np.float32(rect[0][0] + rect[1][0]/2)], [np.float32(rect[1][0] + rect[1][1]/2)]]))
                     
                     rectangles.append(rect)
                     predicted_boxes.append(rect)
                     i += 1
 
             frames.append(frame)
+            t1 = time.time()
+
+            print(t1-t0)
         else:
+            t0 = time.time()
             for i in range(len(rectangles)):
                 if len(kfs) > i:
                     rect = rectangles[i]
@@ -144,6 +151,8 @@ def track_instrument(cap, model, json_content):
                     predicted_boxes.append(pred_rect)
 
             frames.append(frame)
+            t1 = time.time()
+            print(t1 - t0)
 
         index += 1
         ground_truth_boxes = json_content.get(str(index), [])
@@ -154,18 +163,16 @@ def track_instrument(cap, model, json_content):
             gt_height = gt_box[3]
             gt_angle = gt_box[4]
             gt_rect = (gt_center, (gt_width, gt_height), gt_angle)
-            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.int0)], 0, (0, 0, 255), 2)
+            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.intp)], 0, (0, 0, 255), 5)
             for detected_box in predicted_boxes:
                 iou = bb_intersection_over_union(detected_box, gt_rect)
                 if iou > 0.1 and iou < 1:
                     iou_array.append(iou)
                     total_iou_array.append(iou)
         
-        if iou_array:
-            print(f"F{index}: {np.average(iou_array): .2f}")
+        print(f"F{index}: {np.average(iou_array): .2f}")
 
-    if total_iou_array:
-        print(f"Total IOU: {np.average(total_iou_array): .2f}")
+    print(f"Total IOU: {np.average(total_iou_array): .2f}")
     cv2.destroyAllWindows()
 
 # Example usage
@@ -175,7 +182,7 @@ model = get_model(model_path, model_type='UNet11', problem_type='binary')
 cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
 json_content = []
 
-with open(f'./data/videos/{VIDEO_NAME}.json', 'r') as json_file:
+with open(f'./data/videos/{VIDEO_NAME}_tilt.json', 'r') as json_file:
     json_content = json.load(json_file)
 
 track_instrument(cap, model, json_content)

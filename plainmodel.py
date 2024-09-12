@@ -46,9 +46,6 @@ def image_touchup(frame):
 model_path = 'data/models/unet11_binary_20/model_0.pt'
 model = get_model(model_path, model_type='UNet11', problem_type='binary')
 
-VIDEO_NAME = "c6v5"
-cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
-
 frames = []
 rectangles_per_frame = {}
 index = 0
@@ -105,18 +102,22 @@ def runProcessing():
         print("Finished processing frame", index + 1)
         index += 1
 
-# Start processing
-runProcessing()
-cap.release()
-cv2.destroyAllWindows()
-
 # Save results to JSON
 def box_to_list(box):
     center, (width, height), angle = box
     return [center[0], center[1], width, height, angle]
 
-rectangles_per_frame_list = {k: [box_to_list(box) for box in v] for k, v in rectangles_per_frame.items()}
+VIDEO_NAMES = ["c3v4t"]
+for VIDEO_NAME in VIDEO_NAMES:
+    cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
 
-with open(f'./data/videos/{VIDEO_NAME}_tilt.json', 'w') as json_file:
-    json.dump(rectangles_per_frame_list, json_file, indent=4)
-print("Output saved to output.json")
+    # Start processing
+    runProcessing()
+    #cap.release()
+    #cv2.destroyAllWindows()
+
+    rectangles_per_frame_list = {k: [box_to_list(box) for box in v] for k, v in rectangles_per_frame.items()}
+
+    with open(f'./data/videos/{VIDEO_NAME}_tilt.json', 'w') as json_file:
+        json.dump(rectangles_per_frame_list, json_file, indent=4)
+    print("Output saved to output.json")
