@@ -11,7 +11,7 @@ import time
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 # Initialize DeepSORT Tracker
-deepsort = DeepSort(max_age=30, n_init=3, nms_max_overlap=1.0, max_cosine_distance=0.2)
+deepsort = DeepSort(max_age=30, n_init=1, nms_max_overlap=1.0, max_cosine_distance=0.7)
 
 def mask_overlay(image, mask, color=(0, 255, 0)):
     mask = np.dstack((mask, mask, mask)) * np.array(color)
@@ -30,33 +30,50 @@ def preprocess_frame(frame):
     input_image = torch.unsqueeze(ToTensor()(transformed_image), dim=0)
     return input_image
 
-def draw_rotated_box(image, box, color=(0, 255, 0)):
-    center, (width, height), angle = box
-    box_points = cv2.boxPoints(box)
-    box_points = np.intp(box_points)
-    cv2.drawContours(image, [box_points], 0, color, 5)
-    return image
+def get_boxA_corners(boxA):
+    # boxA is [x1, y1, x2, y2]
+    x1, y1, x2, y2 = boxA
+    width = abs(x2 - x1)
+    height = abs(y2 - y1)
+    center_x = (x1 + x2) / 2
+    center_y = (y1 + y2) / 2
+    
+    # Return corner points for axis-aligned boxA
+    return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]]), width, height, (center_x, center_y)
 
-def box_to_polygon(box):
-    center, (width, height), angle = box
-    rect = cv2.boxPoints(box)
-    rect = np.intp(rect)
-    return Polygon(rect)
+def get_boxB_corners(center, width, height, angle):
+    # boxB is [centerX, centerY, width, height, angle]
+    cx, cy = center
+    rect = ((cx, cy), (width, height), angle)
+    
+    # Get corner points using OpenCV's boxPoints
+    corners = cv2.boxPoints(rect)
+    return np.array(corners)
 
 def bb_intersection_over_union(boxA, boxB):
-    polyA = box_to_polygon(boxA)
-    polyB = box_to_polygon(boxB)
+    # Extract data for boxA (axis-aligned)
+    boxA_corners, widthA, heightA, centerA = get_boxA_corners(boxA)
     
-    intersection_poly = polyA.intersection(polyB)
-    union_poly = polyA.union(polyB)
+    # Extract data for boxB (rotated box)
+    centerBX, centerBY, widthB, heightB, angleB = boxB
+    boxB_corners = get_boxB_corners((centerBX, centerBY), widthB, heightB, angleB)
     
-    inter_area = intersection_poly.area
-    union_area = union_poly.area
+    # Convert to polygon shapes
+    polyA = np.array([boxA_corners], dtype=np.int32)
+    polyB = np.array([boxB_corners], dtype=np.int32)
     
-    if union_area == 0:
-        return 0
+    # Compute intersection area using cv2.intersectConvexConvex (if OpenCV version supports it)
+    int_area, _ = cv2.intersectConvexConvex(polyA.astype(np.float32), polyB.astype(np.float32))
     
-    iou = inter_area / union_area
+    # Compute the area of both boxes
+    areaA = widthA * heightA
+    areaB = widthB * heightB
+    
+    # Compute union area
+    union_area = areaA + areaB - int_area
+    
+    # IoU is intersection over union
+    iou = int_area / union_area
     return iou
 
 frames = []
@@ -66,7 +83,7 @@ centers_pred = []
 def display_images():
     frame_index = 0
     while True:
-        cv2.waitKey(500)
+        cv2.waitKey(1000)
         if frame_index < len(frames):
             display_frame = cv2.resize(frames[frame_index], (frames[frame_index].shape[1] // 4, frames[frame_index].shape[0] // 4))
             cv2.imshow('Images with Bounding Box', display_frame)
@@ -84,6 +101,7 @@ VIDEO_NAME = "c6v5"
 def track_instrument(cap, model, json_content):
     index = 0
     total_iou_array = []
+    detections = []
     contours = None
 
     while cap.isOpened():
@@ -92,8 +110,9 @@ def track_instrument(cap, model, json_content):
             break
             
         predicted_boxes = []
+        i = 0
+
         if index % 10 == 0:
-            t0 = time.time()
             input_image = preprocess_frame(frame)
             mask = model(input_image)
             mask_array = mask.data[0].cpu().numpy()[0]
@@ -102,35 +121,35 @@ def track_instrument(cap, model, json_content):
             mask_gray = (mask_array > 0).astype(np.uint8) * 255
             contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             
-            detections = []
             for contour in contours:
-                if cv2.contourArea(contour) > 15000:
-                    rect = cv2.minAreaRect(contour)
-                    center, (width, height), angle = rect
-                    x1, y1 = center[0] - width / 2, center[1] - height / 2
-                    x2, y2 = center[0] + width / 2, center[1] + height / 2
-                    
-                    # DeepSORT requires bounding boxes (x1, y1, x2, y2) and an optional confidence score
-                    detections.append([x1, y1, x2, y2, 1.0])  # [x1, y1, x2, y2, confidence]
-                    
-                    frame = draw_rotated_box(frame, rect, color=(0, 255, 0))
+                if cv2.contourArea(contour) > 10000:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    cv2.rectangle(frame, (x, y), (x + w + 5, y + h + 10), (0, 0, 255), 5) #model gives red
 
+                    detections.append([[x, y, w, h], 1.0, i])  # [x1, y1, w, h, confidence, class_id]
+                    predicted_boxes.append([x, y, w, h])
+                    i += 1
+
+            frames.append(frame)
+        else:
             # Update tracker with the detections
             tracks = deepsort.update_tracks(detections, frame=frame)
             
+            if index % 10 != 1:
+                detections = []
+            
             for track in tracks:
                 if track.is_confirmed() and track.time_since_update <= 1:
-                    track_id = track.track_id
                     bbox = track.to_tlbr()  # Get bounding box in (x1, y1, x2, y2) format
-                    cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (255, 0, 0), 2)
+                    cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 3) #deepsort gives green
                     
-                    predicted_boxes.append((track.to_tlwh(), (width, height), angle))  # tlwh format
-                    
-            frames.append(frame)
-            t1 = time.time()
+                    predicted_boxes.append([int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])])  # tlwh format
+ 
+                    if index % 10 != 1:
+                        detections.append([[int(bbox[0]), int(bbox[1]), int(bbox[2]-bbox[0]), int(bbox[3]-bbox[1])], 1.0, i])
 
-            print(t1 - t0)
-        else:
+                    i += 1
+
             frames.append(frame)
 
         index += 1
@@ -142,9 +161,10 @@ def track_instrument(cap, model, json_content):
             gt_height = gt_box[3]
             gt_angle = gt_box[4]
             gt_rect = (gt_center, (gt_width, gt_height), gt_angle)
-            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.intp)], 0, (0, 0, 255), 5)
+            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.intp)], 0, (255, 0, 0), 3) #ground truth is blue
+
             for detected_box in predicted_boxes:
-                iou = bb_intersection_over_union(detected_box, gt_rect)
+                iou = bb_intersection_over_union(detected_box, gt_box)
                 if iou > 0.1 and iou < 1:
                     iou_array.append(iou)
                     total_iou_array.append(iou)
