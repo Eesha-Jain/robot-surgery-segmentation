@@ -156,19 +156,28 @@ def track_instrument(cap, model, json_content):
 
         index += 1
         ground_truth_boxes = json_content.get(str(index), [])
-        iou_array = []
-        for gt_box in ground_truth_boxes:
-            gt_center = (gt_box[0], gt_box[1])
-            gt_width = gt_box[2]
-            gt_height = gt_box[3]
-            gt_angle = gt_box[4]
-            gt_rect = (gt_center, (gt_width, gt_height), gt_angle)
-            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.intp)], 0, (0, 0, 255), 5)
-            for detected_box in predicted_boxes:
+        iou_array = []        
+        for detected_box in predicted_boxes:
+            predicted_ious = []
+
+            for gt_box in ground_truth_boxes:
+                
+                gt_center = (gt_box[0], gt_box[1])
+                gt_width = gt_box[2]
+                gt_height = gt_box[3]
+                gt_angle = gt_box[4]
+                gt_rect = (gt_center, (gt_width, gt_height), gt_angle)
+                cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.intp)], 0, (0, 0, 255), 5)
+
                 iou = bb_intersection_over_union(detected_box, gt_rect)
                 if iou > 0.1 and iou < 1:
-                    iou_array.append(iou)
-                    total_iou_array.append(iou)
+                    predicted_ious.append(iou)
+            
+            predicted_ious = sorted(predicted_ious, reverse=True)
+            
+            if (len(predicted_ious) > 0):
+                iou_array.append(predicted_ious[0])
+                total_iou_array.append(predicted_ious[0])
         
         print(f"F{index}: {np.average(iou_array): .2f}")
 

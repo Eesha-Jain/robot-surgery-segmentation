@@ -107,6 +107,6 @@ cap.release()
 cv2.destroyAllWindows()
 
 # Save results to JSON
-with open(f'./data/videos/{VIDEO_NAME}.json', 'w') as json_file:
+with open(f'./data/videos/{VIDEO_NAME}_square.json', 'w') as json_file:
     json.dump(rectangles_per_frame, json_file, indent=4)
 print("Output saved to output.json")

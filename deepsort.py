@@ -7,8 +7,9 @@ from torchvision.transforms import ToTensor
 from generate_masks import get_model
 import threading
 from shapely.geometry import Polygon
-import time
+import bob.measure
 from deep_sort_realtime.deepsort_tracker import DeepSort
+import matplotlib.pyplot as plt
 
 # Initialize DeepSORT Tracker
 deepsort = DeepSort(max_age=30, n_init=1, nms_max_overlap=1.0, max_cosine_distance=0.7)
@@ -30,50 +31,17 @@ def preprocess_frame(frame):
     input_image = torch.unsqueeze(ToTensor()(transformed_image), dim=0)
     return input_image
 
-def get_boxA_corners(boxA):
-    # boxA is [x1, y1, x2, y2]
-    x1, y1, x2, y2 = boxA
-    width = abs(x2 - x1)
-    height = abs(y2 - y1)
-    center_x = (x1 + x2) / 2
-    center_y = (y1 + y2) / 2
-    
-    # Return corner points for axis-aligned boxA
-    return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]]), width, height, (center_x, center_y)
-
-def get_boxB_corners(center, width, height, angle):
-    # boxB is [centerX, centerY, width, height, angle]
-    cx, cy = center
-    rect = ((cx, cy), (width, height), angle)
-    
-    # Get corner points using OpenCV's boxPoints
-    corners = cv2.boxPoints(rect)
-    return np.array(corners)
-
 def bb_intersection_over_union(boxA, boxB):
-    # Extract data for boxA (axis-aligned)
-    boxA_corners, widthA, heightA, centerA = get_boxA_corners(boxA)
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[0] + boxA[2], boxB[0] + boxB[2])
+    yB = min(boxA[1] + boxA[3], boxB[1] + boxB[3])
     
-    # Extract data for boxB (rotated box)
-    centerBX, centerBY, widthB, heightB, angleB = boxB
-    boxB_corners = get_boxB_corners((centerBX, centerBY), widthB, heightB, angleB)
+    interArea = (xB - xA) * (yB - yA)
+    boxAArea = boxA[2] * boxA[3]
+    boxBArea = boxB[2] * boxB[3]
     
-    # Convert to polygon shapes
-    polyA = np.array([boxA_corners], dtype=np.int32)
-    polyB = np.array([boxB_corners], dtype=np.int32)
-    
-    # Compute intersection area using cv2.intersectConvexConvex (if OpenCV version supports it)
-    int_area, _ = cv2.intersectConvexConvex(polyA.astype(np.float32), polyB.astype(np.float32))
-    
-    # Compute the area of both boxes
-    areaA = widthA * heightA
-    areaB = widthB * heightB
-    
-    # Compute union area
-    union_area = areaA + areaB - int_area
-    
-    # IoU is intersection over union
-    iou = int_area / union_area
+    iou = interArea / float(boxAArea + boxBArea - interArea)
     return iou
 
 frames = []
@@ -94,21 +62,37 @@ def display_images():
 
     cv2.destroyAllWindows()
 
+# Function to calculate IoU-based similarity scores for each probe
+def calculate_scores(gt_boxes, predicted_boxes, iou_threshold=0.4):
+    scores = []
+    for gt_box in gt_boxes:
+        iou_scores = [bb_intersection_over_union(gt_box, pred_box) for pred_box in predicted_boxes]
+        
+        # Separate positive (IoU > threshold) and negative (IoU <= threshold) scores
+        positive_scores = [iou for iou in iou_scores if iou > iou_threshold]
+        negative_scores = [iou for iou in iou_scores if iou <= iou_threshold]
+        
+        # Append the scores as a tuple (negatives, positives)
+        scores.append((negative_scores, positive_scores))
+    return scores
+
 display_thread = threading.Thread(target=display_images)
 display_thread.start()
 VIDEO_NAME = "c6v5"
 
+# Modify the track_instrument function to include CMC metric calculation
 def track_instrument(cap, model, json_content):
     index = 0
     total_iou_array = []
     detections = []
     contours = None
+    total_scores = []
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-            
+
         predicted_boxes = []
         i = 0
 
@@ -117,14 +101,15 @@ def track_instrument(cap, model, json_content):
             mask = model(input_image)
             mask_array = mask.data[0].cpu().numpy()[0]
             y, x = np.where(mask_array > 0)
+            detections = []
 
             mask_gray = (mask_array > 0).astype(np.uint8) * 255
             contours, _ = cv2.findContours(mask_gray, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            
+
             for contour in contours:
                 if cv2.contourArea(contour) > 10000:
                     x, y, w, h = cv2.boundingRect(contour)
-                    cv2.rectangle(frame, (x, y), (x + w + 5, y + h + 10), (0, 0, 255), 5) #model gives red
+                    cv2.rectangle(frame, (x, y), (x + w + 5, y + h + 10), (0, 0, 255), 5)  # model gives red
 
                     detections.append([[x, y, w, h], 1.0, i])  # [x1, y1, w, h, confidence, class_id]
                     predicted_boxes.append([x, y, w, h])
@@ -134,19 +119,18 @@ def track_instrument(cap, model, json_content):
         else:
             # Update tracker with the detections
             tracks = deepsort.update_tracks(detections, frame=frame)
-            
-            if index % 10 != 1:
-                detections = []
-            
+
+            detections = []
+
             for track in tracks:
-                if track.is_confirmed() and track.time_since_update <= 1:
+                if track.is_confirmed():
                     bbox = track.to_tlbr()  # Get bounding box in (x1, y1, x2, y2) format
-                    cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 3) #deepsort gives green
-                    
-                    predicted_boxes.append([int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])])  # tlwh format
- 
+                    cv2.rectangle(frame, (int(bbox[0]), int(bbox[1])), (int(bbox[2]), int(bbox[3])), (0, 255, 0), 3)  # deepsort gives green
+
+                    predicted_boxes.append([int(bbox[0]), int(bbox[1]), int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])])  # tlwh format
+
                     if index % 10 != 1:
-                        detections.append([[int(bbox[0]), int(bbox[1]), int(bbox[2]-bbox[0]), int(bbox[3]-bbox[1])], 1.0, i])
+                        detections.append([[int(bbox[0]), int(bbox[1]), int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])], 1.0, i])
 
                     i += 1
 
@@ -155,23 +139,53 @@ def track_instrument(cap, model, json_content):
         index += 1
         ground_truth_boxes = json_content.get(str(index), [])
         iou_array = []
-        for gt_box in ground_truth_boxes:
-            gt_center = (gt_box[0], gt_box[1])
-            gt_width = gt_box[2]
-            gt_height = gt_box[3]
-            gt_angle = gt_box[4]
-            gt_rect = (gt_center, (gt_width, gt_height), gt_angle)
-            cv2.drawContours(frame, [cv2.boxPoints(gt_rect).astype(np.intp)], 0, (255, 0, 0), 3) #ground truth is blue
 
-            for detected_box in predicted_boxes:
+        # Calculate scores for this frame
+        frame_scores = calculate_scores(ground_truth_boxes, predicted_boxes)
+        total_scores.extend(frame_scores)  # Store all scores across frames
+
+        for detected_box in predicted_boxes:
+            predicted_ious = []
+
+            for gt_box in ground_truth_boxes:
+                cv2.rectangle(frame, (gt_box[0], gt_box[1]), (gt_box[0] + gt_box[2], gt_box[1] + gt_box[3]), (0, 0, 255), 5)
                 iou = bb_intersection_over_union(detected_box, gt_box)
                 if iou > 0.1 and iou < 1:
-                    iou_array.append(iou)
-                    total_iou_array.append(iou)
-        
+                    predicted_ious.append(iou)
+            
+            predicted_ious = sorted(predicted_ious, reverse=True)
+
+            if (len(predicted_ious) > 0):
+                iou_array.append(predicted_ious[0])
+                total_iou_array.append(predicted_ious[0])
+
         print(f"F{index}: {np.average(iou_array): .2f}")
 
     print(f"Total IOU: {np.average(total_iou_array): .2f}")
+
+    # Compute CMC curve
+    print("Total Scores")
+    print(total_scores)
+
+    bob.measure.np.int = int
+    cmc_values = bob.measure.cmc(total_scores)
+
+    print("CMC Values")
+    print(cmc_values)
+
+    # Plot CMC curve
+    ranks = np.arange(1, len(cmc_values) + 1)
+    plt.plot(ranks, cmc_values)
+
+    print("Ranks")
+    print(ranks)
+
+    plt.xlabel("Rank")
+    plt.ylabel("Recognition Rate")
+    plt.title("CMC Curve")
+    plt.grid(True)
+    plt.savefig("plot.png")
+
     cv2.destroyAllWindows()
 
 # Example usage
@@ -181,7 +195,7 @@ model = get_model(model_path, model_type='UNet11', problem_type='binary')
 cap = cv2.VideoCapture(f"./data/videos/{VIDEO_NAME}.mp4")
 json_content = []
 
-with open(f'./data/videos/{VIDEO_NAME}_tilt.json', 'r') as json_file:
+with open(f'./data/videos/{VIDEO_NAME}_square.json', 'r') as json_file:
     json_content = json.load(json_file)
 
 track_instrument(cap, model, json_content)
